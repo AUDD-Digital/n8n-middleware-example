@@ -1,0 +1,41 @@
+name: susscan
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: AWS Sustainability Scanner
+        uses: aws-actions/sustainability-scanner@v1
+        id: scanner
+        with:
+          directory: 'infra/cloudformation'
+
+      # Use scanner output to create a comment on pull request
+      - name: Comment on pull request
+        uses: actions/github-script@v8
+        with:
+          script: |
+            result=${{ (steps.scanner.outputs.results) }}
+            const score = result.sustainability_score
+            const number_failed_rules = result.failed_rules.length
+
+            if (score === 0) {
+              body = `✅ Your current sustainability score is **${score}**. Sustainability scanner did not find any improvements to apply to your template.`
+            } else {
+              body = `❌ Your current sustainability score is **${score}**. Sustainability scanner suggests **${number_failed_rules}** improvements to apply to your template.\nCheck out the details of the sustainability scanner here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            }
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            })
