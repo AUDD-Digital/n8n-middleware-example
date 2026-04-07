@@ -4,8 +4,8 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "1024",
   "memory": "2048",
-  "executionRoleArn": "arn:aws:iam::123456789012:role/n8nEcsExecutionRole",
-  "taskRoleArn": "arn:aws:iam::123456789012:role/n8nTaskRole",
+  "executionRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nEcsExecutionRole",
+  "taskRoleArn": "arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nTaskRole",
   "runtimePlatform": {
     "cpuArchitecture": "ARM64",
     "operatingSystemFamily": "LINUX"
@@ -26,13 +26,13 @@
         }
       ],
       "environment": [
-        { "name": "N8N_HOST", "value": "n8n.internal.example.com" },
+        { "name": "N8N_HOST", "value": "${N8N_HOST}" },
         { "name": "N8N_PROTOCOL", "value": "https" },
         { "name": "N8N_PORT", "value": "5678" },
-        { "name": "N8N_EDITOR_BASE_URL", "value": "https://n8n.internal.example.com" },
-        { "name": "WEBHOOK_URL", "value": "https://n8n.internal.example.com/" },
+        { "name": "N8N_EDITOR_BASE_URL", "value": "${N8N_EDITOR_BASE_URL}" },
+        { "name": "WEBHOOK_URL", "value": "${WEBHOOK_URL}" },
         { "name": "DB_TYPE", "value": "postgresdb" },
-        { "name": "DB_POSTGRESDB_HOST", "value": "n8n-db.cluster-abc123.us-east-1.rds.amazonaws.com" },
+        { "name": "DB_POSTGRESDB_HOST", "value": "${DB_POSTGRESDB_HOST}" },
         { "name": "DB_POSTGRESDB_PORT", "value": "5432" },
         { "name": "DB_POSTGRESDB_DATABASE", "value": "n8n" },
         { "name": "DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED", "value": "true" },
@@ -48,27 +48,27 @@
       "secrets": [
         {
           "name": "DB_POSTGRESDB_USER",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/db-credentials:username::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:username::"
         },
         {
           "name": "DB_POSTGRESDB_PASSWORD",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/db-credentials:password::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:password::"
         },
         {
           "name": "N8N_ENCRYPTION_KEY",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/app-config:encryptionKey::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:encryptionKey::"
         },
         {
           "name": "N8N_BASIC_AUTH_ACTIVE",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/app-config:basicAuthActive::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthActive::"
         },
         {
           "name": "N8N_BASIC_AUTH_USER",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/app-config:basicAuthUser::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthUser::"
         },
         {
           "name": "N8N_BASIC_AUTH_PASSWORD",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/app-config:basicAuthPassword::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthPassword::"
         }
       ],
       "healthCheck": {
@@ -82,7 +82,7 @@
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/n8n-management",
-          "awslogs-region": "us-east-1",
+          "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "ecs",
           "awslogs-create-group": "true"
         }
@@ -102,11 +102,11 @@
         }
       ],
       "environment": [
-        { "name": "N8N_HOST", "value": "n8n.internal.example.com" },
+        { "name": "N8N_HOST", "value": "${N8N_HOST}" },
         { "name": "N8N_PROTOCOL", "value": "https" },
         { "name": "N8N_PORT", "value": "5678" },
         { "name": "DB_TYPE", "value": "postgresdb" },
-        { "name": "DB_POSTGRESDB_HOST", "value": "n8n-db.cluster-abc123.us-east-1.rds.amazonaws.com" },
+        { "name": "DB_POSTGRESDB_HOST", "value": "${DB_POSTGRESDB_HOST}" },
         { "name": "DB_POSTGRESDB_PORT", "value": "5432" },
         { "name": "DB_POSTGRESDB_DATABASE", "value": "n8n" },
         { "name": "DB_POSTGRESDB_SSL_REJECT_UNAUTHORIZED", "value": "true" },
@@ -118,15 +118,15 @@
       "secrets": [
         {
           "name": "DB_POSTGRESDB_USER",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/db-credentials:username::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:username::"
         },
         {
           "name": "DB_POSTGRESDB_PASSWORD",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/db-credentials:password::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:password::"
         },
         {
           "name": "N8N_ENCRYPTION_KEY",
-          "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:n8n/app-config:encryptionKey::"
+          "valueFrom": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:encryptionKey::"
         }
       ],
       "healthCheck": {
@@ -140,7 +140,7 @@
         "logDriver": "awslogs",
         "options": {
           "awslogs-group": "/ecs/n8n-webhook",
-          "awslogs-region": "us-east-1",
+          "awslogs-region": "${AWS_REGION}",
           "awslogs-stream-prefix": "ecs",
           "awslogs-create-group": "true"
         }
