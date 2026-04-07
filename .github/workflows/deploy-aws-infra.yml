@@ -14,10 +14,14 @@ permissions:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT_NAME: ${{ vars.PROJECT_NAME }}
   VPC_STACK_NAME: ${{ vars.VPC_STACK_NAME }}
   RDS_STACK_NAME: ${{ vars.RDS_STACK_NAME }}
   PRIVATELINK_STACK_NAME: ${{ vars.PRIVATELINK_STACK_NAME }}
   WAF_STACK_NAME: ${{ vars.WAF_STACK_NAME }}
+  N8N_HOST: ${{ vars.N8N_HOST }}
+  N8N_EDITOR_BASE_URL: ${{ vars.N8N_EDITOR_BASE_URL }}
+  WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
 
 jobs:
   validate:
@@ -32,9 +36,84 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve runtime config
+        run: |
+          AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          DB_POSTGRESDB_HOST="$(aws ssm get-parameter --name "/${PROJECT_NAME}/n8n/db/host" --query 'Parameter.Value' --output text || true)"
+          if [ -z "$DB_POSTGRESDB_HOST" ] || [ "$DB_POSTGRESDB_HOST" = "None" ]; then
+            DB_POSTGRESDB_HOST="db-host-not-set.example.local"
+          fi
+          N8N_DB_SECRET_NAME="$(aws ssm get-parameter --name "/${PROJECT_NAME}/n8n/secrets/db-credentials-name" --query 'Parameter.Value' --output text || true)"
+          if [ -z "$N8N_DB_SECRET_NAME" ] || [ "$N8N_DB_SECRET_NAME" = "None" ]; then
+            N8N_DB_SECRET_NAME="${PROJECT_NAME}/db-credentials"
+          fi
+          N8N_APP_SECRET_NAME="$(aws ssm get-parameter --name "/${PROJECT_NAME}/n8n/secrets/app-config-name" --query 'Parameter.Value' --output text || true)"
+          if [ -z "$N8N_APP_SECRET_NAME" ] || [ "$N8N_APP_SECRET_NAME" = "None" ]; then
+            N8N_APP_SECRET_NAME="${PROJECT_NAME}/app-config"
+          fi
+
+          {
+            echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID"
+            echo "DB_POSTGRESDB_HOST=$DB_POSTGRESDB_HOST"
+            echo "N8N_DB_SECRET_NAME=$N8N_DB_SECRET_NAME"
+            echo "N8N_APP_SECRET_NAME=$N8N_APP_SECRET_NAME"
+            echo "EXECUTION_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nEcsExecutionRole"
+            echo "TASK_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nTaskRole"
+            echo "DB_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:username::"
+            echo "DB_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:password::"
+            echo "N8N_ENCRYPTION_KEY_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:encryptionKey::"
+            echo "N8N_BASIC_AUTH_ACTIVE_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthActive::"
+            echo "N8N_BASIC_AUTH_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthUser::"
+            echo "N8N_BASIC_AUTH_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthPassword::"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare base task definition
+        run: |
+          jq \
+            --arg executionRoleArn "$EXECUTION_ROLE_ARN" \
+            --arg taskRoleArn "$TASK_ROLE_ARN" \
+            --arg awsRegion "$AWS_REGION" \
+            '.executionRoleArn = $executionRoleArn
+            | .taskRoleArn = $taskRoleArn
+            | (.containerDefinitions[]?.logConfiguration.options["awslogs-region"]) = $awsRegion' \
+            infra/ecs/n8n-fargate-task-definition.json > infra/ecs/n8n-fargate-task-definition.base.json
+
+      - name: Render management container
+        id: render-management
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/ecs/n8n-fargate-task-definition.base.json
+          container-name: n8n-management
+          environment-variables: |
+            N8N_HOST=${{ env.N8N_HOST }}
+            N8N_EDITOR_BASE_URL=${{ env.N8N_EDITOR_BASE_URL }}
+            WEBHOOK_URL=${{ env.WEBHOOK_URL }}
+            DB_POSTGRESDB_HOST=${{ env.DB_POSTGRESDB_HOST }}
+          secrets: |
+            DB_POSTGRESDB_USER=${{ env.DB_USER_SECRET_ARN }}
+            DB_POSTGRESDB_PASSWORD=${{ env.DB_PASSWORD_SECRET_ARN }}
+            N8N_ENCRYPTION_KEY=${{ env.N8N_ENCRYPTION_KEY_SECRET_ARN }}
+            N8N_BASIC_AUTH_ACTIVE=${{ env.N8N_BASIC_AUTH_ACTIVE_SECRET_ARN }}
+            N8N_BASIC_AUTH_USER=${{ env.N8N_BASIC_AUTH_USER_SECRET_ARN }}
+            N8N_BASIC_AUTH_PASSWORD=${{ env.N8N_BASIC_AUTH_PASSWORD_SECRET_ARN }}
+
+      - name: Render webhook container
+        id: render-webhook
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-management.outputs.task-definition }}
+          container-name: n8n-webhook
+          environment-variables: |
+            N8N_HOST=${{ env.N8N_HOST }}
+            DB_POSTGRESDB_HOST=${{ env.DB_POSTGRESDB_HOST }}
+          secrets: |
+            DB_POSTGRESDB_USER=${{ env.DB_USER_SECRET_ARN }}
+            DB_POSTGRESDB_PASSWORD=${{ env.DB_PASSWORD_SECRET_ARN }}
+            N8N_ENCRYPTION_KEY=${{ env.N8N_ENCRYPTION_KEY_SECRET_ARN }}
+
       - name: Validate task definition JSON
         run: |
-          python -m json.tool infra/ecs/n8n-fargate-task-definition.json > /dev/null
+          python -m json.tool "${{ steps.render-webhook.outputs.task-definition }}" > /dev/null
 
       - name: Validate CloudFormation templates
         run: |
@@ -85,7 +164,77 @@ jobs:
             --template-file infra/cloudformation/waf.yaml \
             --capabilities CAPABILITY_NAMED_IAM
 
+      - name: Resolve runtime config and store in SSM
+        run: |
+          AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          DB_POSTGRESDB_HOST="$(aws cloudformation describe-stacks --stack-name "$RDS_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='DbEndpointAddress'].OutputValue" --output text)"
+          N8N_DB_SECRET_NAME="${PROJECT_NAME}/db-credentials"
+          N8N_APP_SECRET_NAME="${PROJECT_NAME}/app-config"
+
+          aws ssm put-parameter --name "/${PROJECT_NAME}/n8n/db/host" --type String --overwrite --value "$DB_POSTGRESDB_HOST"
+          aws ssm put-parameter --name "/${PROJECT_NAME}/n8n/secrets/db-credentials-name" --type String --overwrite --value "$N8N_DB_SECRET_NAME"
+          aws ssm put-parameter --name "/${PROJECT_NAME}/n8n/secrets/app-config-name" --type String --overwrite --value "$N8N_APP_SECRET_NAME"
+
+          {
+            echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID"
+            echo "DB_POSTGRESDB_HOST=$DB_POSTGRESDB_HOST"
+            echo "N8N_DB_SECRET_NAME=$N8N_DB_SECRET_NAME"
+            echo "N8N_APP_SECRET_NAME=$N8N_APP_SECRET_NAME"
+            echo "EXECUTION_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nEcsExecutionRole"
+            echo "TASK_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nTaskRole"
+            echo "DB_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:username::"
+            echo "DB_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:password::"
+            echo "N8N_ENCRYPTION_KEY_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:encryptionKey::"
+            echo "N8N_BASIC_AUTH_ACTIVE_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthActive::"
+            echo "N8N_BASIC_AUTH_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthUser::"
+            echo "N8N_BASIC_AUTH_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthPassword::"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare base task definition
+        run: |
+          jq \
+            --arg executionRoleArn "$EXECUTION_ROLE_ARN" \
+            --arg taskRoleArn "$TASK_ROLE_ARN" \
+            --arg awsRegion "$AWS_REGION" \
+            '.executionRoleArn = $executionRoleArn
+            | .taskRoleArn = $taskRoleArn
+            | (.containerDefinitions[]?.logConfiguration.options["awslogs-region"]) = $awsRegion' \
+            infra/ecs/n8n-fargate-task-definition.json > infra/ecs/n8n-fargate-task-definition.base.json
+
+      - name: Render management container
+        id: deploy-render-management
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/ecs/n8n-fargate-task-definition.base.json
+          container-name: n8n-management
+          environment-variables: |
+            N8N_HOST=${{ env.N8N_HOST }}
+            N8N_EDITOR_BASE_URL=${{ env.N8N_EDITOR_BASE_URL }}
+            WEBHOOK_URL=${{ env.WEBHOOK_URL }}
+            DB_POSTGRESDB_HOST=${{ env.DB_POSTGRESDB_HOST }}
+          secrets: |
+            DB_POSTGRESDB_USER=${{ env.DB_USER_SECRET_ARN }}
+            DB_POSTGRESDB_PASSWORD=${{ env.DB_PASSWORD_SECRET_ARN }}
+            N8N_ENCRYPTION_KEY=${{ env.N8N_ENCRYPTION_KEY_SECRET_ARN }}
+            N8N_BASIC_AUTH_ACTIVE=${{ env.N8N_BASIC_AUTH_ACTIVE_SECRET_ARN }}
+            N8N_BASIC_AUTH_USER=${{ env.N8N_BASIC_AUTH_USER_SECRET_ARN }}
+            N8N_BASIC_AUTH_PASSWORD=${{ env.N8N_BASIC_AUTH_PASSWORD_SECRET_ARN }}
+
+      - name: Render webhook container
+        id: deploy-render-webhook
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ steps.deploy-render-management.outputs.task-definition }}
+          container-name: n8n-webhook
+          environment-variables: |
+            N8N_HOST=${{ env.N8N_HOST }}
+            DB_POSTGRESDB_HOST=${{ env.DB_POSTGRESDB_HOST }}
+          secrets: |
+            DB_POSTGRESDB_USER=${{ env.DB_USER_SECRET_ARN }}
+            DB_POSTGRESDB_PASSWORD=${{ env.DB_PASSWORD_SECRET_ARN }}
+            N8N_ENCRYPTION_KEY=${{ env.N8N_ENCRYPTION_KEY_SECRET_ARN }}
+
       - name: Register ECS task definition (ARM64)
         run: |
           aws ecs register-task-definition \
-            --cli-input-json file://infra/ecs/n8n-fargate-task-definition.json
+            --cli-input-json "file://${{ steps.deploy-render-webhook.outputs.task-definition }}"
