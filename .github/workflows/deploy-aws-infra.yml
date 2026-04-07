@@ -137,32 +137,36 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy VPC stack
-        run: |
-          aws cloudformation deploy \
-            --stack-name "$VPC_STACK_NAME" \
-            --template-file infra/cloudformation/vpc.yaml \
-            --capabilities CAPABILITY_NAMED_IAM
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: ${{ env.VPC_STACK_NAME }}
+          template: infra/cloudformation/vpc.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
 
       - name: Deploy RDS stack
-        run: |
-          aws cloudformation deploy \
-            --stack-name "$RDS_STACK_NAME" \
-            --template-file infra/cloudformation/rds-postgres.yaml \
-            --capabilities CAPABILITY_NAMED_IAM
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: ${{ env.RDS_STACK_NAME }}
+          template: infra/cloudformation/rds-postgres.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
 
       - name: Deploy PrivateLink stack
-        run: |
-          aws cloudformation deploy \
-            --stack-name "$PRIVATELINK_STACK_NAME" \
-            --template-file infra/cloudformation/privatelink.yaml \
-            --capabilities CAPABILITY_NAMED_IAM
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: ${{ env.PRIVATELINK_STACK_NAME }}
+          template: infra/cloudformation/privatelink.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
 
       - name: Deploy WAF stack
-        run: |
-          aws cloudformation deploy \
-            --stack-name "$WAF_STACK_NAME" \
-            --template-file infra/cloudformation/waf.yaml \
-            --capabilities CAPABILITY_NAMED_IAM
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: ${{ env.WAF_STACK_NAME }}
+          template: infra/cloudformation/waf.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
 
       - name: Resolve runtime config and store in SSM
         run: |
