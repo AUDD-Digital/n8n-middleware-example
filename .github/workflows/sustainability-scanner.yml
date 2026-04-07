@@ -1,7 +1,7 @@
 name: susscan
 
 on:
-  push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -20,22 +20,24 @@ jobs:
 
       # Use scanner output to create a comment on pull request
       - name: Comment on pull request
-        uses: actions/github-script@v7
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v8
         with:
           script: |
-            result=${{ (steps.scanner.outputs.results) }}
+            const result = JSON.parse(`${{ steps.scanner.outputs.results }}`)
             const score = result.sustainability_score
-            const number_failed_rules = result.failed_rules.length
+            const numberFailedRules = result.failed_rules.length
 
+            let body
             if (score === 0) {
               body = `✅ Your current sustainability score is **${score}**. Sustainability scanner did not find any improvements to apply to your template.`
             } else {
-              body = `❌ Your current sustainability score is **${score}**. Sustainability scanner suggests **${number_failed_rules}** improvements to apply to your template.\nCheck out the details of the sustainability scanner here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+              body = `❌ Your current sustainability score is **${score}**. Sustainability scanner suggests **${numberFailedRules}** improvements to apply to your template.\nCheck out the details of the sustainability scanner here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
             }
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+
+            await github.rest.issues.createComment({
+              issue_number: context.payload.pull_request.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: body
+              body
             })
