@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS WAFv2 baseline for n8n public endpoint protection.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: n8n
+  Scope:
+    Type: String
+    Default: REGIONAL
+    AllowedValues: [REGIONAL, CLOUDFRONT]
+  AlbArn:
+    Type: String
+    Default: ''
+    Description: Optional ALB ARN for direct association.
+
+Conditions:
+  AssociateWithAlb: !Not [!Equals [!Ref AlbArn, '']]
+
+Resources:
+  WafLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/waf/${ProjectName}'
+      RetentionInDays: 90
+
+  N8nWebAcl:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub '${ProjectName}-web-acl'
+      Scope: !Ref Scope
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        CloudWatchMetricsEnabled: true
+        MetricName: !Sub '${ProjectName}-web-acl'
+        SampledRequestsEnabled: true
+      Rules:
+        - Name: AWS-AWSManagedRulesCommonRuleSet
+          Priority: 10
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: common-rules
+            SampledRequestsEnabled: true
+        - Name: AWS-AWSManagedRulesKnownBadInputsRuleSet
+          Priority: 20
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesKnownBadInputsRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: bad-input-rules
+            SampledRequestsEnabled: true
+        - Name: AWS-AWSManagedRulesAmazonIpReputationList
+          Priority: 30
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAmazonIpReputationList
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: ip-reputation-rules
+            SampledRequestsEnabled: true
+        - Name: AWS-AWSManagedRulesSQLiRuleSet
+          Priority: 40
+          OverrideAction:
+            None: {}
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesSQLiRuleSet
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: sqli-rules
+            SampledRequestsEnabled: true
+        - Name: RateLimit
+          Priority: 50
+          Action:
+            Block: {}
+          Statement:
+            RateBasedStatement:
+              AggregateKeyType: IP
+              Limit: 1000
+          VisibilityConfig:
+            CloudWatchMetricsEnabled: true
+            MetricName: rate-limit
+            SampledRequestsEnabled: true
+
+  WafLoggingConfiguration:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Properties:
+      LogDestinationConfigs:
+        - !GetAtt WafLogGroup.Arn
+      ResourceArn: !GetAtt N8nWebAcl.Arn
+
+  WafAlbAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Condition: AssociateWithAlb
+    Properties:
+      ResourceArn: !Ref AlbArn
+      WebACLArn: !GetAtt N8nWebAcl.Arn
+
+Outputs:
+  WebAclArn:
+    Value: !GetAtt N8nWebAcl.Arn

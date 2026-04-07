@@ -1,0 +1,91 @@
+name: Deploy n8n AWS Infrastructure
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "infra/**"
+      - ".github/workflows/deploy-aws-infra.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  VPC_STACK_NAME: ${{ vars.VPC_STACK_NAME }}
+  RDS_STACK_NAME: ${{ vars.RDS_STACK_NAME }}
+  PRIVATELINK_STACK_NAME: ${{ vars.PRIVATELINK_STACK_NAME }}
+  WAF_STACK_NAME: ${{ vars.WAF_STACK_NAME }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate task definition JSON
+        run: |
+          python -m json.tool infra/ecs/n8n-fargate-task-definition.json > /dev/null
+
+      - name: Validate CloudFormation templates
+        run: |
+          aws cloudformation validate-template --template-body file://infra/cloudformation/vpc.yaml
+          aws cloudformation validate-template --template-body file://infra/cloudformation/rds-postgres.yaml
+          aws cloudformation validate-template --template-body file://infra/cloudformation/privatelink.yaml
+          aws cloudformation validate-template --template-body file://infra/cloudformation/waf.yaml
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy VPC stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$VPC_STACK_NAME" \
+            --template-file infra/cloudformation/vpc.yaml \
+            --capabilities CAPABILITY_NAMED_IAM
+
+      - name: Deploy RDS stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$RDS_STACK_NAME" \
+            --template-file infra/cloudformation/rds-postgres.yaml \
+            --capabilities CAPABILITY_NAMED_IAM
+
+      - name: Deploy PrivateLink stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$PRIVATELINK_STACK_NAME" \
+            --template-file infra/cloudformation/privatelink.yaml \
+            --capabilities CAPABILITY_NAMED_IAM
+
+      - name: Deploy WAF stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$WAF_STACK_NAME" \
+            --template-file infra/cloudformation/waf.yaml \
+            --capabilities CAPABILITY_NAMED_IAM
+
+      - name: Register ECS task definition (ARM64)
+        run: |
+          aws ecs register-task-definition \
+            --cli-input-json file://infra/ecs/n8n-fargate-task-definition.json

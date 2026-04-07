@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Interface VPC Endpoint for private access to API Gateway (execute-api) from n8n workloads.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: n8n
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet::Id
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet::Id
+  AppSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  ApiGatewayId:
+    Type: String
+    Description: API Gateway REST API ID used in endpoint policy.
+  ApiGatewayRegion:
+    Type: String
+    Default: us-east-1
+  PrivateDnsName:
+    Type: String
+    Default: devhub.audd.digital
+    Description: Split-horizon record to force traffic over the interface endpoint.
+
+Resources:
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: n8n app to API Gateway interface endpoint
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref AppSecurityGroupId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  ApiGatewayVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${ApiGatewayRegion}.execute-api'
+      VpcId: !Ref VpcId
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroup
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowInvokeForSpecificApi
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - execute-api:Invoke
+            Resource: !Sub 'arn:aws:execute-api:${ApiGatewayRegion}:${AWS::AccountId}:${ApiGatewayId}/*'
+
+  SplitHorizonPrivateZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Ref PrivateDnsName
+      VPCs:
+        - VPCId: !Ref VpcId
+          VPCRegion: !Ref AWS::Region
+      HostedZoneConfig:
+        Comment: Private DNS mapping for API endpoint over PrivateLink
+
+  SplitHorizonAlias:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref SplitHorizonPrivateZone
+      Name: !Ref PrivateDnsName
+      Type: A
+      AliasTarget:
+        HostedZoneId: !Select
+          - 0
+          - !Split
+            - ':'
+            - !Select [0, !GetAtt ApiGatewayVpcEndpoint.DnsEntries]
+        DNSName: !Select
+          - 1
+          - !Split
+            - ':'
+            - !Select [0, !GetAtt ApiGatewayVpcEndpoint.DnsEntries]
+
+Outputs:
+  ApiGatewayVpcEndpointId:
+    Value: !Ref ApiGatewayVpcEndpoint
+  ApiGatewayVpcEndpointDns:
+    Value: !Select
+      - 1
+      - !Split
+        - ':'
+        - !Select [0, !GetAtt ApiGatewayVpcEndpoint.DnsEntries]
