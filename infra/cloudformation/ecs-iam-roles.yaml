@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: IAM roles required for ECS Express Mode deployments.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: n8n
+  ExecutionRoleName:
+    Type: String
+    Default: n8nEcsExecutionRole
+  InfrastructureRoleName:
+    Type: String
+    Default: n8nEcsInfrastructureRoleForExpressServices
+  TaskRoleName:
+    Type: String
+    Default: n8nTaskRole
+
+Resources:
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref ExecutionRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EcsInfrastructureRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref InfrastructureRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSInfrastructureRoleforExpressGatewayServices
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref TaskRoleName
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  ExecutionRoleArn:
+    Value: !GetAtt EcsExecutionRole.Arn
+  InfrastructureRoleArn:
+    Value: !GetAtt EcsInfrastructureRole.Arn
+  TaskRoleArn:
+    Value: !GetAtt EcsTaskRole.Arn

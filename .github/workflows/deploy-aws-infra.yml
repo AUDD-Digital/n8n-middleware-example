@@ -19,6 +19,12 @@ env:
   RDS_STACK_NAME: ${{ vars.RDS_STACK_NAME }}
   PRIVATELINK_STACK_NAME: ${{ vars.PRIVATELINK_STACK_NAME }}
   WAF_STACK_NAME: ${{ vars.WAF_STACK_NAME }}
+  ECS_IAM_STACK_NAME: ${{ vars.ECS_IAM_STACK_NAME }}
+  ECS_CLUSTER_NAME: ${{ vars.ECS_CLUSTER_NAME }}
+  ECS_SERVICE_NAME: ${{ vars.ECS_SERVICE_NAME }}
+  ECS_SUBNETS: ${{ vars.ECS_SUBNETS }}
+  ECS_SECURITY_GROUPS: ${{ vars.ECS_SECURITY_GROUPS }}
+  N8N_IMAGE: ${{ vars.N8N_IMAGE }}
   N8N_HOST: ${{ vars.N8N_HOST }}
   N8N_EDITOR_BASE_URL: ${{ vars.N8N_EDITOR_BASE_URL }}
   WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
@@ -57,8 +63,6 @@ jobs:
             echo "DB_POSTGRESDB_HOST=$DB_POSTGRESDB_HOST"
             echo "N8N_DB_SECRET_NAME=$N8N_DB_SECRET_NAME"
             echo "N8N_APP_SECRET_NAME=$N8N_APP_SECRET_NAME"
-            echo "EXECUTION_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nEcsExecutionRole"
-            echo "TASK_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nTaskRole"
             echo "DB_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:username::"
             echo "DB_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:password::"
             echo "N8N_ENCRYPTION_KEY_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:encryptionKey::"
@@ -67,53 +71,9 @@ jobs:
             echo "N8N_BASIC_AUTH_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthPassword::"
           } >> "$GITHUB_ENV"
 
-      - name: Prepare base task definition
+      - name: Validate ECS Express service YAML
         run: |
-          jq \
-            --arg executionRoleArn "$EXECUTION_ROLE_ARN" \
-            --arg taskRoleArn "$TASK_ROLE_ARN" \
-            --arg awsRegion "$AWS_REGION" \
-            '.executionRoleArn = $executionRoleArn
-            | .taskRoleArn = $taskRoleArn
-            | (.containerDefinitions[]?.logConfiguration.options["awslogs-region"]) = $awsRegion' \
-            infra/ecs/n8n-fargate-task-definition.json > infra/ecs/n8n-fargate-task-definition.base.json
-
-      - name: Render management container
-        id: render-management
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: infra/ecs/n8n-fargate-task-definition.base.json
-          container-name: n8n-management
-          environment-variables: |
-            N8N_HOST=${{ env.N8N_HOST }}
-            N8N_EDITOR_BASE_URL=${{ env.N8N_EDITOR_BASE_URL }}
-            WEBHOOK_URL=${{ env.WEBHOOK_URL }}
-            DB_POSTGRESDB_HOST=${{ env.DB_POSTGRESDB_HOST }}
-          secrets: |
-            DB_POSTGRESDB_USER=${{ env.DB_USER_SECRET_ARN }}
-            DB_POSTGRESDB_PASSWORD=${{ env.DB_PASSWORD_SECRET_ARN }}
-            N8N_ENCRYPTION_KEY=${{ env.N8N_ENCRYPTION_KEY_SECRET_ARN }}
-            N8N_BASIC_AUTH_ACTIVE=${{ env.N8N_BASIC_AUTH_ACTIVE_SECRET_ARN }}
-            N8N_BASIC_AUTH_USER=${{ env.N8N_BASIC_AUTH_USER_SECRET_ARN }}
-            N8N_BASIC_AUTH_PASSWORD=${{ env.N8N_BASIC_AUTH_PASSWORD_SECRET_ARN }}
-
-      - name: Render webhook container
-        id: render-webhook
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: ${{ steps.render-management.outputs.task-definition }}
-          container-name: n8n-webhook
-          environment-variables: |
-            N8N_HOST=${{ env.N8N_HOST }}
-            DB_POSTGRESDB_HOST=${{ env.DB_POSTGRESDB_HOST }}
-          secrets: |
-            DB_POSTGRESDB_USER=${{ env.DB_USER_SECRET_ARN }}
-            DB_POSTGRESDB_PASSWORD=${{ env.DB_PASSWORD_SECRET_ARN }}
-            N8N_ENCRYPTION_KEY=${{ env.N8N_ENCRYPTION_KEY_SECRET_ARN }}
-
-      - name: Validate task definition JSON
-        run: |
-          python -m json.tool "${{ steps.render-webhook.outputs.task-definition }}" > /dev/null
+          ruby -ryaml -e 'YAML.load_file("infra/ecs/n8n-express-service.yml")'
 
       - name: Validate CloudFormation templates
         run: |
@@ -121,6 +81,7 @@ jobs:
           aws cloudformation validate-template --template-body file://infra/cloudformation/rds-postgres.yaml
           aws cloudformation validate-template --template-body file://infra/cloudformation/privatelink.yaml
           aws cloudformation validate-template --template-body file://infra/cloudformation/waf.yaml
+          aws cloudformation validate-template --template-body file://infra/cloudformation/ecs-iam-roles.yaml
 
   deploy:
     needs: validate
@@ -136,6 +97,15 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Set workflow defaults
+        run: |
+          {
+            echo "ECS_IAM_STACK_NAME=${ECS_IAM_STACK_NAME:-${PROJECT_NAME}-ecs-iam}"
+            echo "ECS_CLUSTER_NAME=${ECS_CLUSTER_NAME:-default}"
+            echo "ECS_SERVICE_NAME=${ECS_SERVICE_NAME:-${PROJECT_NAME}-service}"
+            echo "N8N_IMAGE=${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:latest}"
+          } >> "$GITHUB_ENV"
+
       - name: Deploy VPC stack
         uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
@@ -143,6 +113,26 @@ jobs:
           template: infra/cloudformation/vpc.yaml
           capabilities: CAPABILITY_NAMED_IAM
           no-fail-on-empty-changeset: "1"
+
+      - name: Deploy IAM roles for ECS Express Mode
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: ${{ env.ECS_IAM_STACK_NAME }}
+          template: infra/cloudformation/ecs-iam-roles.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          parameter-overrides: ProjectName=${{ env.PROJECT_NAME }}
+          no-fail-on-empty-changeset: "1"
+
+      - name: Resolve IAM role ARNs
+        run: |
+          EXECUTION_ROLE_ARN="$(aws cloudformation describe-stacks --stack-name "$ECS_IAM_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='ExecutionRoleArn'].OutputValue" --output text)"
+          INFRASTRUCTURE_ROLE_ARN="$(aws cloudformation describe-stacks --stack-name "$ECS_IAM_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='InfrastructureRoleArn'].OutputValue" --output text)"
+          TASK_ROLE_ARN="$(aws cloudformation describe-stacks --stack-name "$ECS_IAM_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='TaskRoleArn'].OutputValue" --output text)"
+          {
+            echo "EXECUTION_ROLE_ARN=$EXECUTION_ROLE_ARN"
+            echo "INFRASTRUCTURE_ROLE_ARN=$INFRASTRUCTURE_ROLE_ARN"
+            echo "TASK_ROLE_ARN=$TASK_ROLE_ARN"
+          } >> "$GITHUB_ENV"
 
       - name: Deploy RDS stack
         uses: aws-actions/aws-cloudformation-github-deploy@v2
@@ -179,13 +169,16 @@ jobs:
           aws ssm put-parameter --name "/${PROJECT_NAME}/n8n/secrets/db-credentials-name" --type String --overwrite --value "$N8N_DB_SECRET_NAME"
           aws ssm put-parameter --name "/${PROJECT_NAME}/n8n/secrets/app-config-name" --type String --overwrite --value "$N8N_APP_SECRET_NAME"
 
+          if [ -z "$ECS_SUBNETS" ]; then
+            ECS_SUBNETS="$(aws cloudformation describe-stacks --stack-name "$VPC_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='PublicSubnetIds'].OutputValue" --output text)"
+          fi
+
           {
             echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID"
             echo "DB_POSTGRESDB_HOST=$DB_POSTGRESDB_HOST"
             echo "N8N_DB_SECRET_NAME=$N8N_DB_SECRET_NAME"
             echo "N8N_APP_SECRET_NAME=$N8N_APP_SECRET_NAME"
-            echo "EXECUTION_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nEcsExecutionRole"
-            echo "TASK_ROLE_ARN=arn:aws:iam::${AWS_ACCOUNT_ID}:role/n8nTaskRole"
+            echo "ECS_SUBNETS=$ECS_SUBNETS"
             echo "DB_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:username::"
             echo "DB_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:password::"
             echo "N8N_ENCRYPTION_KEY_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:encryptionKey::"
@@ -194,51 +187,91 @@ jobs:
             echo "N8N_BASIC_AUTH_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthPassword::"
           } >> "$GITHUB_ENV"
 
-      - name: Prepare base task definition
+      - name: Render ECS Express service configuration
+        id: render-express
         run: |
-          jq \
-            --arg executionRoleArn "$EXECUTION_ROLE_ARN" \
-            --arg taskRoleArn "$TASK_ROLE_ARN" \
-            --arg awsRegion "$AWS_REGION" \
-            '.executionRoleArn = $executionRoleArn
-            | .taskRoleArn = $taskRoleArn
-            | (.containerDefinitions[]?.logConfiguration.options["awslogs-region"]) = $awsRegion' \
-            infra/ecs/n8n-fargate-task-definition.json > infra/ecs/n8n-fargate-task-definition.base.json
+          ruby <<'RUBY' >> "$GITHUB_OUTPUT"
+          require 'yaml'
+          require 'json'
 
-      - name: Render management container
-        id: deploy-render-management
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
+          def render_value(value)
+            case value
+            when String
+              value.gsub(/\$\{([A-Z0-9_]+)\}/) { ENV.fetch(Regexp.last_match(1), "") }
+            when Array
+              value.map { |entry| render_value(entry) }
+            when Hash
+              value.transform_values { |entry| render_value(entry) }
+            else
+              value
+            end
+          end
+
+          config = YAML.load_file('infra/ecs/n8n-express-service.yml')
+          rendered = render_value(config)
+
+          {
+            'service-name' => rendered.fetch('service-name'),
+            'cluster' => rendered.fetch('cluster'),
+            'image' => rendered.fetch('image'),
+            'container-port' => rendered.fetch('container-port').to_s,
+            'cpu' => rendered.fetch('cpu').to_s,
+            'memory' => rendered.fetch('memory').to_s,
+            'cpu-architecture' => rendered.fetch('cpu-architecture'),
+            'health-check-path' => rendered.fetch('health-check-path'),
+            'min-task-count' => rendered.fetch('min-task-count').to_s,
+            'max-task-count' => rendered.fetch('max-task-count').to_s,
+            'auto-scaling-metric' => rendered.fetch('auto-scaling-metric'),
+            'auto-scaling-target-value' => rendered.fetch('auto-scaling-target-value').to_s,
+            'command' => JSON.generate(rendered.fetch('command')),
+            'environment-variables' => JSON.generate(rendered.fetch('environment-variables')),
+            'secrets' => JSON.generate(rendered.fetch('secrets')),
+            'tags' => JSON.generate(rendered.fetch('tags'))
+          }.each do |key, value|
+            puts "#{key}=#{value}"
+          end
+          RUBY
+
+      - name: Deploy to ECS Express Mode
+        id: deploy-express
+        uses: aws-actions/amazon-ecs-deploy-express-service@v1
         with:
-          task-definition: infra/ecs/n8n-fargate-task-definition.base.json
-          container-name: n8n-management
-          environment-variables: |
-            N8N_HOST=${{ env.N8N_HOST }}
-            N8N_EDITOR_BASE_URL=${{ env.N8N_EDITOR_BASE_URL }}
-            WEBHOOK_URL=${{ env.WEBHOOK_URL }}
-            DB_POSTGRESDB_HOST=${{ env.DB_POSTGRESDB_HOST }}
-          secrets: |
-            DB_POSTGRESDB_USER=${{ env.DB_USER_SECRET_ARN }}
-            DB_POSTGRESDB_PASSWORD=${{ env.DB_PASSWORD_SECRET_ARN }}
-            N8N_ENCRYPTION_KEY=${{ env.N8N_ENCRYPTION_KEY_SECRET_ARN }}
-            N8N_BASIC_AUTH_ACTIVE=${{ env.N8N_BASIC_AUTH_ACTIVE_SECRET_ARN }}
-            N8N_BASIC_AUTH_USER=${{ env.N8N_BASIC_AUTH_USER_SECRET_ARN }}
-            N8N_BASIC_AUTH_PASSWORD=${{ env.N8N_BASIC_AUTH_PASSWORD_SECRET_ARN }}
+          service-name: ${{ steps.render-express.outputs.service-name }}
+          cluster: ${{ steps.render-express.outputs.cluster }}
+          image: ${{ steps.render-express.outputs.image }}
+          execution-role-arn: ${{ env.EXECUTION_ROLE_ARN }}
+          infrastructure-role-arn: ${{ env.INFRASTRUCTURE_ROLE_ARN }}
+          task-role-arn: ${{ env.TASK_ROLE_ARN }}
+          container-port: ${{ steps.render-express.outputs.container-port }}
+          environment-variables: ${{ steps.render-express.outputs.environment-variables }}
+          secrets: ${{ steps.render-express.outputs.secrets }}
+          command: ${{ steps.render-express.outputs.command }}
+          tags: ${{ steps.render-express.outputs.tags }}
+          cpu: ${{ steps.render-express.outputs.cpu }}
+          memory: ${{ steps.render-express.outputs.memory }}
+          cpu-architecture: ${{ steps.render-express.outputs.cpu-architecture }}
+          subnets: ${{ env.ECS_SUBNETS }}
+          security-groups: ${{ env.ECS_SECURITY_GROUPS }}
+          health-check-path: ${{ steps.render-express.outputs.health-check-path }}
+          min-task-count: ${{ steps.render-express.outputs.min-task-count }}
+          max-task-count: ${{ steps.render-express.outputs.max-task-count }}
+          auto-scaling-metric: ${{ steps.render-express.outputs.auto-scaling-metric }}
+          auto-scaling-target-value: ${{ steps.render-express.outputs.auto-scaling-target-value }}
 
-      - name: Render webhook container
-        id: deploy-render-webhook
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: ${{ steps.deploy-render-management.outputs.task-definition }}
-          container-name: n8n-webhook
-          environment-variables: |
-            N8N_HOST=${{ env.N8N_HOST }}
-            DB_POSTGRESDB_HOST=${{ env.DB_POSTGRESDB_HOST }}
-          secrets: |
-            DB_POSTGRESDB_USER=${{ env.DB_USER_SECRET_ARN }}
-            DB_POSTGRESDB_PASSWORD=${{ env.DB_PASSWORD_SECRET_ARN }}
-            N8N_ENCRYPTION_KEY=${{ env.N8N_ENCRYPTION_KEY_SECRET_ARN }}
-
-      - name: Register ECS task definition (ARM64)
+      - name: Associate WAF Web ACL with ECS Express ALB
         run: |
-          aws ecs register-task-definition \
-            --cli-input-json "file://${{ steps.deploy-render-webhook.outputs.task-definition }}"
+          EXPRESS_DESC="$(aws ecs describe-express-gateway-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_SERVICE_NAME" --output json)"
+          ALB_ARN="$(echo "$EXPRESS_DESC" | jq -r '.service.loadBalancers[0].loadBalancerArn // .loadBalancers[0].loadBalancerArn // empty')"
+          if [ -z "$ALB_ARN" ]; then
+            echo "Unable to resolve ALB ARN from ECS Express service description" >&2
+            exit 1
+          fi
+
+          WEB_ACL_ARN="$(aws cloudformation describe-stacks --stack-name "$WAF_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='WebAclArn'].OutputValue" --output text)"
+          if [ -z "$WEB_ACL_ARN" ] || [ "$WEB_ACL_ARN" = "None" ]; then
+            echo "Unable to resolve WAF WebAclArn output" >&2
+            exit 1
+          fi
+
+          aws wafv2 associate-web-acl --scope REGIONAL --web-acl-arn "$WEB_ACL_ARN" --resource-arn "$ALB_ARN" || \
+            aws wafv2 get-web-acl-for-resource --resource-arn "$ALB_ARN" --query 'WebACL.ARN' --output text
