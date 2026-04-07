@@ -20,7 +20,7 @@ jobs:
 
       # Use scanner output to create a comment on pull request
       - name: Comment on pull request
-        uses: actions/github-script@v8
+        uses: actions/github-script@v7
         with:
           script: |
             result=${{ (steps.scanner.outputs.results) }}
