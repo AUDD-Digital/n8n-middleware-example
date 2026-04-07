@@ -1,0 +1,48 @@
+name: susscan
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: AWS Sustainability Scanner
+        uses: aws-actions/sustainability-scanner@v1
+        id: scanner
+        with:
+          directory: 'infra'
+
+      # Use scanner output to create a comment on pull request
+      - name: Comment on pull request
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const result = JSON.parse(`${{ steps.scanner.outputs.results }}`)
+            const score = result.sustainability_score
+            const numberFailedRules = result.failed_rules.length
+
+            let body
+            if (score === 0) {
+              body = `✅ Your current sustainability score is **${score}**. Sustainability scanner did not find any improvements to apply to your template.`
+            } else {
+              body = `❌ Your current sustainability score is **${score}**. Sustainability scanner suggests **${numberFailedRules}** improvements to apply to your template.\nCheck out the details of the sustainability scanner here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+            }
+
+            await github.rest.issues.createComment({
+              issue_number: context.payload.pull_request.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            })

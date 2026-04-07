@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Amazon RDS PostgreSQL for n8n with security hardening defaults.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: n8n
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  DbSubnet1:
+    Type: AWS::EC2::Subnet::Id
+  DbSubnet2:
+    Type: AWS::EC2::Subnet::Id
+  AppSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  DBName:
+    Type: String
+    Default: n8n
+  DBInstanceClass:
+    Type: String
+    Default: db.t4g.medium
+  AllocatedStorage:
+    Type: Number
+    Default: 100
+  MaxAllocatedStorage:
+    Type: Number
+    Default: 500
+  StorageType:
+    Type: String
+    Default: gp3
+    AllowedValues: [gp3, io1, io2]
+  EngineVersion:
+    Type: String
+    Default: '16.3'
+  MasterUsername:
+    Type: String
+    Default: n8n_admin
+    MinLength: 4
+    MaxLength: 16
+  MasterUserPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+
+Resources:
+  DbKmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub '${ProjectName} RDS encryption key'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowRootAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+
+  DbKmsAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${ProjectName}-rds'
+      TargetKeyId: !Ref DbKmsKey
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: n8n Postgres access from ECS services only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroupId
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: n8n data subnets
+      SubnetIds:
+        - !Ref DbSubnet1
+        - !Ref DbSubnet2
+
+  DbParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: n8n postgres parameters
+      Family: postgres16
+      Parameters:
+        rds.force_ssl: '1'
+        log_connections: '1'
+        log_disconnections: '1'
+
+  DbInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub '${ProjectName}-postgres'
+      DBName: !Ref DBName
+      Engine: postgres
+      EngineVersion: !Ref EngineVersion
+      DBInstanceClass: !Ref DBInstanceClass
+      MasterUsername: !Ref MasterUsername
+      MasterUserPassword: !Ref MasterUserPassword
+      MultiAZ: true
+      StorageEncrypted: true
+      KmsKeyId: !Ref DbKmsKey
+      AllocatedStorage: !Ref AllocatedStorage
+      MaxAllocatedStorage: !Ref MaxAllocatedStorage
+      StorageType: !Ref StorageType
+      BackupRetentionPeriod: 14
+      PreferredBackupWindow: 04:00-05:00
+      PreferredMaintenanceWindow: sun:05:00-sun:06:00
+      AutoMinorVersionUpgrade: true
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsRetentionPeriod: 7
+      MonitoringInterval: 60
+      DeletionProtection: true
+      CopyTagsToSnapshot: true
+      Port: 5432
+      VPCSecurityGroups:
+        - !Ref DbSecurityGroup
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      DBParameterGroupName: !Ref DbParameterGroup
+
+Outputs:
+  DbEndpointAddress:
+    Value: !GetAtt DbInstance.Endpoint.Address
+  DbEndpointPort:
+    Value: !GetAtt DbInstance.Endpoint.Port
+  DbSecurityGroupId:
+    Value: !Ref DbSecurityGroup

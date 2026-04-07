@@ -1,0 +1,277 @@
+name: Deploy n8n AWS Infrastructure
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "infra/**"
+      - ".github/workflows/deploy-aws-infra.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  PROJECT_NAME: ${{ vars.PROJECT_NAME }}
+  VPC_STACK_NAME: ${{ vars.VPC_STACK_NAME }}
+  RDS_STACK_NAME: ${{ vars.RDS_STACK_NAME }}
+  PRIVATELINK_STACK_NAME: ${{ vars.PRIVATELINK_STACK_NAME }}
+  WAF_STACK_NAME: ${{ vars.WAF_STACK_NAME }}
+  ECS_IAM_STACK_NAME: ${{ vars.ECS_IAM_STACK_NAME }}
+  ECS_CLUSTER_NAME: ${{ vars.ECS_CLUSTER_NAME }}
+  ECS_SERVICE_NAME: ${{ vars.ECS_SERVICE_NAME }}
+  ECS_SUBNETS: ${{ vars.ECS_SUBNETS }}
+  ECS_SECURITY_GROUPS: ${{ vars.ECS_SECURITY_GROUPS }}
+  N8N_IMAGE: ${{ vars.N8N_IMAGE }}
+  N8N_HOST: ${{ vars.N8N_HOST }}
+  N8N_EDITOR_BASE_URL: ${{ vars.N8N_EDITOR_BASE_URL }}
+  WEBHOOK_URL: ${{ vars.WEBHOOK_URL }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve runtime config
+        run: |
+          AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          DB_POSTGRESDB_HOST="$(aws ssm get-parameter --name "/${PROJECT_NAME}/n8n/db/host" --query 'Parameter.Value' --output text || true)"
+          if [ -z "$DB_POSTGRESDB_HOST" ] || [ "$DB_POSTGRESDB_HOST" = "None" ]; then
+            DB_POSTGRESDB_HOST="db-host-not-set.example.local"
+          fi
+          N8N_DB_SECRET_NAME="$(aws ssm get-parameter --name "/${PROJECT_NAME}/n8n/secrets/db-credentials-name" --query 'Parameter.Value' --output text || true)"
+          if [ -z "$N8N_DB_SECRET_NAME" ] || [ "$N8N_DB_SECRET_NAME" = "None" ]; then
+            N8N_DB_SECRET_NAME="${PROJECT_NAME}/db-credentials"
+          fi
+          N8N_APP_SECRET_NAME="$(aws ssm get-parameter --name "/${PROJECT_NAME}/n8n/secrets/app-config-name" --query 'Parameter.Value' --output text || true)"
+          if [ -z "$N8N_APP_SECRET_NAME" ] || [ "$N8N_APP_SECRET_NAME" = "None" ]; then
+            N8N_APP_SECRET_NAME="${PROJECT_NAME}/app-config"
+          fi
+
+          {
+            echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID"
+            echo "DB_POSTGRESDB_HOST=$DB_POSTGRESDB_HOST"
+            echo "N8N_DB_SECRET_NAME=$N8N_DB_SECRET_NAME"
+            echo "N8N_APP_SECRET_NAME=$N8N_APP_SECRET_NAME"
+            echo "DB_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:username::"
+            echo "DB_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:password::"
+            echo "N8N_ENCRYPTION_KEY_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:encryptionKey::"
+            echo "N8N_BASIC_AUTH_ACTIVE_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthActive::"
+            echo "N8N_BASIC_AUTH_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthUser::"
+            echo "N8N_BASIC_AUTH_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthPassword::"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate ECS Express service YAML
+        run: |
+          ruby -ryaml -e 'YAML.load_file("infra/n8n-express-service.yml")'
+
+      - name: Validate CloudFormation templates
+        run: |
+          aws cloudformation validate-template --template-body file://infra/vpc.yaml
+          aws cloudformation validate-template --template-body file://infra/rds-postgres.yaml
+          aws cloudformation validate-template --template-body file://infra/privatelink.yaml
+          aws cloudformation validate-template --template-body file://infra/waf.yaml
+          aws cloudformation validate-template --template-body file://infra/ecs-iam-roles.yaml
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure AWS credentials (OIDC role)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set workflow defaults
+        run: |
+          {
+            echo "ECS_IAM_STACK_NAME=${ECS_IAM_STACK_NAME:-${PROJECT_NAME}-ecs-iam}"
+            echo "ECS_CLUSTER_NAME=${ECS_CLUSTER_NAME:-default}"
+            echo "ECS_SERVICE_NAME=${ECS_SERVICE_NAME:-${PROJECT_NAME}-service}"
+            echo "N8N_IMAGE=${N8N_IMAGE:-docker.n8n.io/n8nio/n8n:latest}"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy VPC stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: ${{ env.VPC_STACK_NAME }}
+          template: infra/vpc.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
+
+      - name: Deploy IAM roles for ECS Express Mode
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: ${{ env.ECS_IAM_STACK_NAME }}
+          template: infra/ecs-iam-roles.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          parameter-overrides: ProjectName=${{ env.PROJECT_NAME }}
+          no-fail-on-empty-changeset: "1"
+
+      - name: Resolve IAM role ARNs
+        run: |
+          EXECUTION_ROLE_ARN="$(aws cloudformation describe-stacks --stack-name "$ECS_IAM_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='ExecutionRoleArn'].OutputValue" --output text)"
+          INFRASTRUCTURE_ROLE_ARN="$(aws cloudformation describe-stacks --stack-name "$ECS_IAM_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='InfrastructureRoleArn'].OutputValue" --output text)"
+          TASK_ROLE_ARN="$(aws cloudformation describe-stacks --stack-name "$ECS_IAM_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='TaskRoleArn'].OutputValue" --output text)"
+          {
+            echo "EXECUTION_ROLE_ARN=$EXECUTION_ROLE_ARN"
+            echo "INFRASTRUCTURE_ROLE_ARN=$INFRASTRUCTURE_ROLE_ARN"
+            echo "TASK_ROLE_ARN=$TASK_ROLE_ARN"
+          } >> "$GITHUB_ENV"
+
+      - name: Deploy RDS stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: ${{ env.RDS_STACK_NAME }}
+          template: infra/rds-postgres.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
+
+      - name: Deploy PrivateLink stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: ${{ env.PRIVATELINK_STACK_NAME }}
+          template: infra/privatelink.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
+
+      - name: Deploy WAF stack
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
+        with:
+          name: ${{ env.WAF_STACK_NAME }}
+          template: infra/waf.yaml
+          capabilities: CAPABILITY_NAMED_IAM
+          no-fail-on-empty-changeset: "1"
+
+      - name: Resolve runtime config and store in SSM
+        run: |
+          AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+          DB_POSTGRESDB_HOST="$(aws cloudformation describe-stacks --stack-name "$RDS_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='DbEndpointAddress'].OutputValue" --output text)"
+          N8N_DB_SECRET_NAME="${PROJECT_NAME}/db-credentials"
+          N8N_APP_SECRET_NAME="${PROJECT_NAME}/app-config"
+
+          aws ssm put-parameter --name "/${PROJECT_NAME}/n8n/db/host" --type String --overwrite --value "$DB_POSTGRESDB_HOST"
+          aws ssm put-parameter --name "/${PROJECT_NAME}/n8n/secrets/db-credentials-name" --type String --overwrite --value "$N8N_DB_SECRET_NAME"
+          aws ssm put-parameter --name "/${PROJECT_NAME}/n8n/secrets/app-config-name" --type String --overwrite --value "$N8N_APP_SECRET_NAME"
+
+          if [ -z "$ECS_SUBNETS" ]; then
+            ECS_SUBNETS="$(aws cloudformation describe-stacks --stack-name "$VPC_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='PublicSubnetIds'].OutputValue" --output text)"
+          fi
+
+          {
+            echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID"
+            echo "DB_POSTGRESDB_HOST=$DB_POSTGRESDB_HOST"
+            echo "N8N_DB_SECRET_NAME=$N8N_DB_SECRET_NAME"
+            echo "N8N_APP_SECRET_NAME=$N8N_APP_SECRET_NAME"
+            echo "ECS_SUBNETS=$ECS_SUBNETS"
+            echo "DB_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:username::"
+            echo "DB_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_DB_SECRET_NAME}:password::"
+            echo "N8N_ENCRYPTION_KEY_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:encryptionKey::"
+            echo "N8N_BASIC_AUTH_ACTIVE_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthActive::"
+            echo "N8N_BASIC_AUTH_USER_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthUser::"
+            echo "N8N_BASIC_AUTH_PASSWORD_SECRET_ARN=arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${N8N_APP_SECRET_NAME}:basicAuthPassword::"
+          } >> "$GITHUB_ENV"
+
+      - name: Render ECS Express service configuration
+        id: render-express
+        run: |
+          ruby <<'RUBY' >> "$GITHUB_OUTPUT"
+          require 'yaml'
+          require 'json'
+
+          def render_value(value)
+            case value
+            when String
+              value.gsub(/\$\{([A-Z0-9_]+)\}/) { ENV.fetch(Regexp.last_match(1), "") }
+            when Array
+              value.map { |entry| render_value(entry) }
+            when Hash
+              value.transform_values { |entry| render_value(entry) }
+            else
+              value
+            end
+          end
+
+          config = YAML.load_file('infra/n8n-express-service.yml')
+          rendered = render_value(config)
+
+          {
+            'service-name' => rendered.fetch('service-name'),
+            'cluster' => rendered.fetch('cluster'),
+            'image' => rendered.fetch('image'),
+            'container-port' => rendered.fetch('container-port').to_s,
+            'cpu' => rendered.fetch('cpu').to_s,
+            'memory' => rendered.fetch('memory').to_s,
+            'cpu-architecture' => rendered.fetch('cpu-architecture'),
+            'health-check-path' => rendered.fetch('health-check-path'),
+            'min-task-count' => rendered.fetch('min-task-count').to_s,
+            'max-task-count' => rendered.fetch('max-task-count').to_s,
+            'auto-scaling-metric' => rendered.fetch('auto-scaling-metric'),
+            'auto-scaling-target-value' => rendered.fetch('auto-scaling-target-value').to_s,
+            'command' => JSON.generate(rendered.fetch('command')),
+            'environment-variables' => JSON.generate(rendered.fetch('environment-variables')),
+            'secrets' => JSON.generate(rendered.fetch('secrets')),
+            'tags' => JSON.generate(rendered.fetch('tags'))
+          }.each do |key, value|
+            puts "#{key}=#{value}"
+          end
+          RUBY
+
+      - name: Deploy to ECS Express Mode
+        id: deploy-express
+        uses: aws-actions/amazon-ecs-deploy-express-service@v1
+        with:
+          service-name: ${{ steps.render-express.outputs.service-name }}
+          cluster: ${{ steps.render-express.outputs.cluster }}
+          image: ${{ steps.render-express.outputs.image }}
+          execution-role-arn: ${{ env.EXECUTION_ROLE_ARN }}
+          infrastructure-role-arn: ${{ env.INFRASTRUCTURE_ROLE_ARN }}
+          task-role-arn: ${{ env.TASK_ROLE_ARN }}
+          container-port: ${{ steps.render-express.outputs.container-port }}
+          environment-variables: ${{ steps.render-express.outputs.environment-variables }}
+          secrets: ${{ steps.render-express.outputs.secrets }}
+          command: ${{ steps.render-express.outputs.command }}
+          tags: ${{ steps.render-express.outputs.tags }}
+          cpu: ${{ steps.render-express.outputs.cpu }}
+          memory: ${{ steps.render-express.outputs.memory }}
+          cpu-architecture: ${{ steps.render-express.outputs.cpu-architecture }}
+          subnets: ${{ env.ECS_SUBNETS }}
+          security-groups: ${{ env.ECS_SECURITY_GROUPS }}
+          health-check-path: ${{ steps.render-express.outputs.health-check-path }}
+          min-task-count: ${{ steps.render-express.outputs.min-task-count }}
+          max-task-count: ${{ steps.render-express.outputs.max-task-count }}
+          auto-scaling-metric: ${{ steps.render-express.outputs.auto-scaling-metric }}
+          auto-scaling-target-value: ${{ steps.render-express.outputs.auto-scaling-target-value }}
+
+      - name: Associate WAF Web ACL with ECS Express ALB
+        run: |
+          EXPRESS_DESC="$(aws ecs describe-express-gateway-service --cluster "$ECS_CLUSTER_NAME" --service "$ECS_SERVICE_NAME" --output json)"
+          ALB_ARN="$(echo "$EXPRESS_DESC" | jq -r '.service.loadBalancers[0].loadBalancerArn // .loadBalancers[0].loadBalancerArn // empty')"
+          if [ -z "$ALB_ARN" ]; then
+            echo "Unable to resolve ALB ARN from ECS Express service description" >&2
+            exit 1
+          fi
+
+          WEB_ACL_ARN="$(aws cloudformation describe-stacks --stack-name "$WAF_STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='WebAclArn'].OutputValue" --output text)"
+          if [ -z "$WEB_ACL_ARN" ] || [ "$WEB_ACL_ARN" = "None" ]; then
+            echo "Unable to resolve WAF WebAclArn output" >&2
+            exit 1
+          fi
+
+          aws wafv2 associate-web-acl --scope REGIONAL --web-acl-arn "$WEB_ACL_ARN" --resource-arn "$ALB_ARN" || \
+            aws wafv2 get-web-acl-for-resource --resource-arn "$ALB_ARN" --query 'WebACL.ARN' --output text
