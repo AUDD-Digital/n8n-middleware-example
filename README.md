@@ -4,13 +4,13 @@ Infrastructure artifacts for running a self-hosted n8n deployment on AWS Fargate
 
 ## What is included
 
-- `infra/ecs/n8n-fargate-task-definition.json` - ECS Fargate task definition template with two essential n8n containers (`n8n-management` and `n8n-webhook`) and Secrets Manager integration (ARM64 runtime).
-- `aws-actions/amazon-ecs-render-task-definition` (in workflow) - Renders runtime container environment/secrets values before ECS registration.
-- `infra/cloudformation/vpc.yaml` - VPC baseline stack (2 AZ, segmented public/app/data subnets, NAT, route tables).
-- `infra/cloudformation/rds-postgres.yaml` - RDS PostgreSQL with encryption, Multi-AZ, deletion protection, forced SSL, and backup defaults.
-- `infra/cloudformation/privatelink.yaml` - Interface endpoint for `execute-api`, locked endpoint policy, and split-horizon Route53 private DNS for `devhub.audd.digital`.
-- `infra/cloudformation/waf.yaml` - WAFv2 Web ACL using AWS managed rule groups, rate limiting, and logging.
-- `.github/workflows/deploy-aws-infra.yml` - GitHub Actions workflow to validate and deploy CloudFormation and register the ECS task definition.
+- `infra/n8n-express-service.yml` - ECS Express Mode service configuration (YAML) used by the deployment workflow to render container settings, secrets, scaling, health checks, and ARM64 runtime selection.
+- `aws-actions/amazon-ecs-deploy-express-service` (in workflow) - Renders service config, registers task definitions, and deploys/updates the ECS Express Mode service.
+- `infra/vpc.yaml` - VPC baseline stack (2 AZ, segmented public/app/data subnets, NAT, route tables).
+- `infra/rds-postgres.yaml` - RDS PostgreSQL with encryption, Multi-AZ, deletion protection, forced SSL, and backup defaults.
+- `infra/privatelink.yaml` - Interface endpoint for `execute-api`, locked endpoint policy, and split-horizon Route53 private DNS for `devhub.audd.digital`.
+- `infra/waf.yaml` - WAFv2 Web ACL using AWS managed rule groups, rate limiting, and logging.
+- `.github/workflows/deploy-aws-infra.yml` - GitHub Actions workflow to validate and deploy CloudFormation, create IAM roles for ECS Express Mode, render service config, and deploy the ECS Express service.
 
 ## Recommended deployment order
 
@@ -19,7 +19,7 @@ Infrastructure artifacts for running a self-hosted n8n deployment on AWS Fargate
 3. Deploy `rds-postgres.yaml` with private data subnets and app security group.
 4. Deploy `privatelink.yaml` with private app subnets and app security group.
 5. Deploy `waf.yaml`, then associate with ALB (or CloudFront if required).
-6. Register/update `n8n-fargate-task-definition.json` and roll ECS service.
+6. Render and deploy `n8n-express-service.yml` through ECS Express Mode.
 
 ## GitHub Actions setup (AWS credentials + variables)
 
@@ -56,14 +56,17 @@ In GitHub: **Settings → Secrets and variables → Actions → Secrets**, add:
 2. Create an IAM role trusted by that provider with a trust policy scoped to your repo and branch/environment.
 3. Attach least-privilege policies allowing:
    - `cloudformation:ValidateTemplate`, `cloudformation:CreateStack`, `cloudformation:UpdateStack`, `cloudformation:Describe*`
-   - `ecs:RegisterTaskDefinition`
-   - `iam:PassRole` for the ECS task/execution roles used in task definition registration
+   - `ecs:RegisterTaskDefinition`, `ecs:CreateExpressGatewayService`, `ecs:UpdateExpressGatewayService`, `ecs:DescribeExpressGatewayService`, `ecs:ListServiceDeployments`, `ecs:DescribeServiceDeployments`
+   - `ecs:CreateCluster`, `ecs:DescribeClusters`, `ecs:DescribeServices`, `ecs:TagResource`, `ecs:UntagResource`
+   - `iam:PassRole` for execution, task, and infrastructure roles
    - Any additional service permissions required by your stack resources.
 4. Copy the role ARN and store it as `AWS_ROLE_TO_ASSUME` in GitHub Secrets.
 
-### 4) Task definition rendering
+### 4) ECS Express service rendering and deployment
 
-The workflow renders the ECS task definition using `aws-actions/amazon-ecs-render-task-definition` before validation/registration. Runtime values (host URLs, DB endpoint, and secrets) are injected at workflow runtime instead of hardcoding them in the JSON file.
+The workflow renders `infra/n8n-express-service.yml` at runtime, substitutes environment/secret values, and deploys using `aws-actions/amazon-ecs-deploy-express-service`. This action handles task-definition registration and service deployment in one step.
+
+By default, the workflow resolves `PublicSubnetIds` from the VPC stack when `ECS_SUBNETS` is not explicitly configured, which keeps the ECS Express Mode ALB internet-facing. After deployment, the workflow associates the WAF Web ACL with the ECS-managed ALB automatically.
 
 The following values are generated/resolved automatically and stored in AWS Systems Manager Parameter Store (SSM):
 
