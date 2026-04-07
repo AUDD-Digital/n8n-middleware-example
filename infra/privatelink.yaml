@@ -16,12 +16,16 @@ Parameters:
   ApiGatewayId:
     Type: String
     Description: API Gateway REST API ID used in endpoint policy.
-  ApiGatewayRegion:
+  PrivateLinkServiceRegion:
     Type: String
+    Description: Region where the PrivateLink endpoint service is published.
     Default: us-east-1
+  PrivateLinkServiceName:
+    Type: String
+    Description: Full endpoint service name (for example, com.amazonaws.us-east-1.execute-api or com.amazonaws.vpce.us-east-1.vpce-svc-xxxxxxxxxxxxxxxxx).
+    Default: com.amazonaws.us-east-1.execute-api
   PrivateDnsName:
     Type: String
-    Default: devhub.audd.digital
     Description: Split-horizon record to force traffic over the interface endpoint.
 
 Resources:
@@ -42,7 +46,8 @@ Resources:
   ApiGatewayVpcEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Properties:
-      ServiceName: !Sub 'com.amazonaws.${ApiGatewayRegion}.execute-api'
+      ServiceRegion: !Ref PrivateLinkServiceRegion
+      ServiceName: !Ref PrivateLinkServiceName
       VpcId: !Ref VpcId
       VpcEndpointType: Interface
       SubnetIds:
@@ -59,7 +64,7 @@ Resources:
             Principal: '*'
             Action:
               - execute-api:Invoke
-            Resource: !Sub 'arn:aws:execute-api:${ApiGatewayRegion}:${AWS::AccountId}:${ApiGatewayId}/*'
+            Resource: !Sub 'arn:aws:execute-api:${PrivateLinkServiceRegion}:${AWS::AccountId}:${ApiGatewayId}/*'
 
   SplitHorizonPrivateZone:
     Type: AWS::Route53::HostedZone

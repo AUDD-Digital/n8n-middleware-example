@@ -8,7 +8,7 @@ Infrastructure artifacts for running a self-hosted n8n deployment on AWS Fargate
 - `aws-actions/amazon-ecs-deploy-express-service` (in workflow) - Renders service config, registers task definitions, and deploys/updates the ECS Express Mode service.
 - `infra/vpc.yaml` - VPC baseline stack (2 AZ, segmented public/app/data subnets, NAT, route tables).
 - `infra/rds-postgres.yaml` - RDS PostgreSQL with encryption, Multi-AZ, deletion protection, forced SSL, and backup defaults.
-- `infra/privatelink.yaml` - Interface endpoint for `execute-api`, locked endpoint policy, and split-horizon Route53 private DNS for `devhub.audd.digital`.
+- `infra/privatelink.yaml` - Interface endpoint with configurable PrivateLink service name/region, locked endpoint policy, and split-horizon Route53 private DNS.
 - `infra/waf.yaml` - WAFv2 Web ACL using AWS managed rule groups, rate limiting, and logging.
 - `.github/workflows/deploy-aws-infra.yml` - GitHub Actions workflow to validate and deploy CloudFormation, create IAM roles for ECS Express Mode, render service config, and deploy the ECS Express service.
 
