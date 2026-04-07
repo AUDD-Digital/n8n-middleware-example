@@ -137,7 +137,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy VPC stack
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.VPC_STACK_NAME }}
           template: infra/cloudformation/vpc.yaml
@@ -145,7 +145,7 @@ jobs:
           no-fail-on-empty-changeset: "1"
 
       - name: Deploy RDS stack
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.RDS_STACK_NAME }}
           template: infra/cloudformation/rds-postgres.yaml
@@ -153,7 +153,7 @@ jobs:
           no-fail-on-empty-changeset: "1"
 
       - name: Deploy PrivateLink stack
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.PRIVATELINK_STACK_NAME }}
           template: infra/cloudformation/privatelink.yaml
@@ -161,7 +161,7 @@ jobs:
           no-fail-on-empty-changeset: "1"
 
       - name: Deploy WAF stack
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.WAF_STACK_NAME }}
           template: infra/cloudformation/waf.yaml
