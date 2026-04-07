@@ -73,15 +73,15 @@ jobs:
 
       - name: Validate ECS Express service YAML
         run: |
-          ruby -ryaml -e 'YAML.load_file("infra/ecs/n8n-express-service.yml")'
+          ruby -ryaml -e 'YAML.load_file("infra/n8n-express-service.yml")'
 
       - name: Validate CloudFormation templates
         run: |
-          aws cloudformation validate-template --template-body file://infra/cloudformation/vpc.yaml
-          aws cloudformation validate-template --template-body file://infra/cloudformation/rds-postgres.yaml
-          aws cloudformation validate-template --template-body file://infra/cloudformation/privatelink.yaml
-          aws cloudformation validate-template --template-body file://infra/cloudformation/waf.yaml
-          aws cloudformation validate-template --template-body file://infra/cloudformation/ecs-iam-roles.yaml
+          aws cloudformation validate-template --template-body file://infra/vpc.yaml
+          aws cloudformation validate-template --template-body file://infra/rds-postgres.yaml
+          aws cloudformation validate-template --template-body file://infra/privatelink.yaml
+          aws cloudformation validate-template --template-body file://infra/waf.yaml
+          aws cloudformation validate-template --template-body file://infra/ecs-iam-roles.yaml
 
   deploy:
     needs: validate
@@ -110,7 +110,7 @@ jobs:
         uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.VPC_STACK_NAME }}
-          template: infra/cloudformation/vpc.yaml
+          template: infra/vpc.yaml
           capabilities: CAPABILITY_NAMED_IAM
           no-fail-on-empty-changeset: "1"
 
@@ -118,7 +118,7 @@ jobs:
         uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.ECS_IAM_STACK_NAME }}
-          template: infra/cloudformation/ecs-iam-roles.yaml
+          template: infra/ecs-iam-roles.yaml
           capabilities: CAPABILITY_NAMED_IAM
           parameter-overrides: ProjectName=${{ env.PROJECT_NAME }}
           no-fail-on-empty-changeset: "1"
@@ -138,7 +138,7 @@ jobs:
         uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.RDS_STACK_NAME }}
-          template: infra/cloudformation/rds-postgres.yaml
+          template: infra/rds-postgres.yaml
           capabilities: CAPABILITY_NAMED_IAM
           no-fail-on-empty-changeset: "1"
 
@@ -146,7 +146,7 @@ jobs:
         uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.PRIVATELINK_STACK_NAME }}
-          template: infra/cloudformation/privatelink.yaml
+          template: infra/privatelink.yaml
           capabilities: CAPABILITY_NAMED_IAM
           no-fail-on-empty-changeset: "1"
 
@@ -154,7 +154,7 @@ jobs:
         uses: aws-actions/aws-cloudformation-github-deploy@v2
         with:
           name: ${{ env.WAF_STACK_NAME }}
-          template: infra/cloudformation/waf.yaml
+          template: infra/waf.yaml
           capabilities: CAPABILITY_NAMED_IAM
           no-fail-on-empty-changeset: "1"
 
@@ -207,7 +207,7 @@ jobs:
             end
           end
 
-          config = YAML.load_file('infra/ecs/n8n-express-service.yml')
+          config = YAML.load_file('infra/n8n-express-service.yml')
           rendered = render_value(config)
 
           {
