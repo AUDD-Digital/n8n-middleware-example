@@ -21,7 +21,7 @@ jobs:
         uses: aws-actions/sustainability-scanner@v1
         id: scanner
         with:
-          directory: 'infra/cloudformation'
+          directory: 'infra'
 
       # Use scanner output to create a comment on pull request
       - name: Comment on pull request
