@@ -1,6 +1,7 @@
 # n8n-middleware-example
 
 [![CodeQL](https://github.com/AUDD-Digital/n8n-middleware-example/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/AUDD-Digital/n8n-middleware-example/actions/workflows/github-code-scanning/codeql)
+[![susscan](https://github.com/AUDD-Digital/n8n-middleware-example/actions/workflows/sustainability-scanner.yml/badge.svg)](https://github.com/AUDD-Digital/n8n-middleware-example/actions/workflows/sustainability-scanner.yml)
 
 Infrastructure artifacts for running a self-hosted n8n deployment on AWS Fargate with PostgreSQL (RDS), PrivateLink access to API Gateway, and WAF protections.
 
